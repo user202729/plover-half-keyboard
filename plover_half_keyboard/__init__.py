@@ -17,19 +17,7 @@ from plover.oslayer.keyboardcontrol import KeyboardCapture
 #_._('Half Keyboard')
 
 
-class _Event(NamedTuple):
-    is_down: bool
-    key: str
-    event_time: float #time.time()
-
-
-class _StopThread(Exception): pass
-
-MAX_DOWN_GAP=0.05
-MIN_OVERLAP=0.1
-MAX_OVERLAP=0.2
-MAX_UP_GAP=0.05
-DELAY_TIME=0.02 # sufficiently small, but not too small to save CPU time
+from plover_half_keyboard.lib import _Event, _StopThread, can_be_chord_part, events_to_steno_keys, DELAY_TIME
 
 
 class HalfKeyboard(StenotypeBase):
@@ -138,76 +126,6 @@ class HalfKeyboard(StenotypeBase):
                 process_one_pending()
 
 
-        def can_be_chord_part(current: float=None)->bool:
-            """
-            Check if pending_events can be prefix of a chord.
-
-            pending_events must not be mutated during the execution of this function.
-            (it's probably not possible anyway without another thread modifying it)
-
-            pressed must be consistent.
-            """
-            if current is None: current=time.time()
-
-            assert current_might_be_chord #otherwise what's the point of checking?
-
-            if not pending_events: return True
-
-            assert pending_events[0].is_down
-
-            first_is_up=next(
-                    (
-                        index for index, event in enumerate(pending_events)
-                        if not event.is_down
-                        )
-                    , len(pending_events))
-            assert first_is_up>=1
-
-            down_gap=pending_events[first_is_up-1].event_time-pending_events[0].event_time
-            if down_gap>MAX_DOWN_GAP:
-                print(f"Fail: {down_gap=}")
-                return False
-
-            time_to_last_event=current-pending_events[-1].event_time
-            if time_to_last_event>max(MAX_OVERLAP, MAX_UP_GAP)+DELAY_TIME*2:
-                print(f"Fail: {time_to_last_event=}")
-                return False # NOTE not very strict, but is good enough
-
-            if first_is_up==len(pending_events):
-                return True
-
-            if any(event.is_down for event in [*pending_events][first_is_up:]):
-                print(f"Fail: alternative up/down")
-                return False
-            up_gap=pending_events[-1].event_time-pending_events[first_is_up].event_time
-            if up_gap>MAX_UP_GAP:
-                print(f"Fail: {up_gap=}")
-                return False
-
-            overlapping_gap=pending_events[first_is_up].event_time-pending_events[first_is_up-1].event_time
-            if not (MIN_OVERLAP<=overlapping_gap<=MAX_OVERLAP):
-                print(f"Fail: {overlapping_gap=}")
-                return False
-
-            print(f"All accepted: {down_gap=} {up_gap=} {overlapping_gap=}")
-            return True
-
-        def events_to_steno_keys(current: float=None)->Optional[Set[str]]:
-            """
-            Convert (pending_events) to a chord.
-            Returns None if it should not be interpreted as a chord.
-            """
-            nonlocal current_might_be_chord
-            assert current_might_be_chord
-            assert can_be_chord_part(current)
-            #if len(pending_events)==2: # ignore single key press
-            #    return None
-            return {
-                    steno_key
-                    for steno_key in
-                    (self._bindings.get(key) for [is_down, key, event_time] in pending_events)
-                    if steno_key is not None
-                    }
 
 
         def process_actual_event(event: Union[_Event, _StopThread])->None:
@@ -236,8 +154,8 @@ class HalfKeyboard(StenotypeBase):
                     if not pressed:
                         # [reset_chord]
                         current=time.time()
-                        if current_might_be_chord and can_be_chord_part(current):
-                            steno_keys=events_to_steno_keys(current)
+                        if current_might_be_chord and can_be_chord_part(pending_events, current):
+                            steno_keys=events_to_steno_keys(pending_events, self._bindings, current)
                             if not steno_keys: # the user might have stroked a stroke full of no-op?
                                 process_pending()
                             else:
@@ -278,7 +196,7 @@ class HalfKeyboard(StenotypeBase):
 
                 #there may be delayed (pending) events
 
-                if current_might_be_chord and not can_be_chord_part():
+                if current_might_be_chord and not can_be_chord_part(pending_events):
                     assert pending_events
                     # because the empty sequence is the subsequence of any sequences (of events)
 

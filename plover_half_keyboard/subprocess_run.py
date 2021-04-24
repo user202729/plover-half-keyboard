@@ -8,7 +8,7 @@ def subprocess_plot_run(queue_)->None:
     figure, axe=plt.subplots()
     figure.show()
 
-    from plover_half_keyboard import _Event, _StopThread
+    from plover_half_keyboard.lib import _Event, _StopThread
     import queue
 
     pressed_time={}
