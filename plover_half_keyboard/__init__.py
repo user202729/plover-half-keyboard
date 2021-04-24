@@ -4,6 +4,7 @@ import time
 import queue
 import collections
 import threading
+import multiprocessing
 from typing import Set, NamedTuple, Deque, Union, Optional, Dict
 
 #from plover import _
@@ -24,7 +25,6 @@ class _Event(NamedTuple):
 
 class _StopThread(Exception): pass
 
-
 MAX_DOWN_GAP=0.05
 MIN_OVERLAP=0.1
 MAX_OVERLAP=0.2
@@ -44,18 +44,27 @@ class HalfKeyboard(StenotypeBase):
     KEYS_LAYOUT = KeyboardCapture.SUPPORTED_KEYS_LAYOUT
     ACTIONS = ("Mark as chord", "Mark as keys", "Change to chord", "Change to keys")
 
-    def __init__(self, params):
+    def __init__(self, params)->None:
         """Monitor the keyboard's events."""
         super().__init__()
         self._is_suppressed = False
 
-        self._keyboard_capture = None
+        self._keyboard_capture: Optional[KeyboardCapture] = None
         self._last_stroke_key_down_count = 0
         self._update_bindings()
 
+        multiprocessing_context=multiprocessing.get_context("spawn")
+
         self._events_queue: queue.Queue[Union[_Event, _StopThread]] = queue.Queue()
+        self._plot_process_queue: queue.Queue[Union[_Event, _StopThread]] = multiprocessing_context.Queue()
+
+        # events should be put into both (_add_event)
 
         self._event_processing_thread = threading.Thread(target=self._event_processing_thread_run)
+
+        from .subprocess_run import subprocess_plot_run
+        self._plot_process=multiprocessing_context.Process(target=subprocess_plot_run,
+                args=(self._plot_process_queue,))
 
     def _event_processing_thread_run(self)->None:
         # counting those **received** from self._events_queue
@@ -241,9 +250,11 @@ class HalfKeyboard(StenotypeBase):
                         current_might_be_chord=True
 
                 else:
+                    # note: STRAY_UP
                     print(f"{key=} should have been in {pressed=}, or some modifier is held while the key is pressed down, (pressed, key)")
                     current_might_be_chord=False
                     process_pending()
+
 
         try:
             while True:
@@ -251,6 +262,7 @@ class HalfKeyboard(StenotypeBase):
                 if pressed:
                     # wait for a little bit, even if there's no new events
                     # happens when the user holds a key for a while
+                    # note: STRAY_DOWN
                     time.sleep(DELAY_TIME)
                     try:
                         while True:
@@ -275,8 +287,6 @@ class HalfKeyboard(StenotypeBase):
 
         except _StopThread:
             pass
-     
-
 
     def _suppress(self)->None:
         if self._keyboard_capture is None:
@@ -306,10 +316,15 @@ class HalfKeyboard(StenotypeBase):
             self._suppress()
             self._keyboard_capture.start()
             self._event_processing_thread.start()
+            self._plot_process.start()
         except:
             self._error()
             raise
         self._ready()
+
+    def _add_event(self, event: Union[_Event, _StopThread])->None:
+        self._events_queue.put(event)
+        self._plot_process_queue.put(event)
 
     def stop_capture(self)->None:
         """Stop listening for output from the stenotype machine."""
@@ -318,8 +333,9 @@ class HalfKeyboard(StenotypeBase):
             self._suppress()
             self._keyboard_capture.cancel()
             self._keyboard_capture = None
-        self._events_queue.put(_StopThread())
+        self._add_event(_StopThread())
         self._event_processing_thread.join()
+        self._plot_process.join()
         self._stopped()
 
     def set_suppression(self, enabled)->None:
@@ -338,7 +354,7 @@ class HalfKeyboard(StenotypeBase):
             print(f"Special command pressed {self._bindings[key]}")
             return
 
-        self._events_queue.put(_Event(True, key, time.time()))
+        self._add_event(_Event(True, key, time.time()))
 
     def _key_up(self, key)->None:
         """Called when a key is released."""
@@ -348,7 +364,7 @@ class HalfKeyboard(StenotypeBase):
             # special command
             return
 
-        self._events_queue.put(_Event(False, key, time.time()))
+        self._add_event(_Event(False, key, time.time()))
 
 
     @classmethod
